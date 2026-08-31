@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Wifi, WifiOff, LogOut, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { ThemeToggle } from './ThemeToggle'
+import { getApiUrl } from '../config'
 import axios from 'axios'
 
 interface TopBarProps {
@@ -23,7 +24,7 @@ export function TopBar({ onLogout }: TopBarProps) {
   const [online, setOnline] = useState<boolean | null>(null)
 
   useEffect(() => {
-    axios.get('/health', { timeout: 4000 })
+    axios.get(getApiUrl('/health'), { timeout: 4000 })
       .then(() => setOnline(true))
       .catch(() => setOnline(false))
   }, [])

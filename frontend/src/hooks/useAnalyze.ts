@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import axios, { AxiosError } from 'axios'
 import { AnalysisResponse } from '../types'
+import { getApiUrl } from '../config'
 
 interface UseAnalyzeReturn {
   result: AnalysisResponse | null
@@ -28,14 +29,18 @@ export function useAnalyze(): UseAnalyzeReturn {
 
     try {
       const response = await axios.post<AnalysisResponse>(
-        '/analyze-document',
+        getApiUrl('/analyze-document'),
         formData,
         {
           headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 120_000, // 2 min — OCR + dlib can be slow
+          timeout: 120_000, // 2 min — OCR + face verification
         },
       )
-      setResult(response.data)
+      const data = response.data
+      if (data.tampering?.heatmap_url && !data.tampering.heatmap_url.startsWith('http')) {
+        data.tampering.heatmap_url = getApiUrl(data.tampering.heatmap_url)
+      }
+      setResult(data)
     } catch (err) {
       const axiosErr = err as AxiosError<{ detail: string }>
       if (axiosErr.response?.data?.detail) {
