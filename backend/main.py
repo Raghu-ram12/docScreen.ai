@@ -75,7 +75,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -126,13 +126,7 @@ def health_check():
 @app.get("/", tags=["meta"])
 @app.head("/", tags=["meta"])
 def root_status():
-    """Root endpoint for status check and API navigation."""
-    # If React frontend dist is present, let the SPA handler serve index.html
-    if (Path("dist") / "index.html").exists() or (Path("../frontend/dist") / "index.html").exists():
-        from fastapi.responses import FileResponse
-        dist_path = Path("dist") if (Path("dist") / "index.html").exists() else Path("../frontend/dist")
-        return FileResponse(dist_path / "index.html")
-
+    """Root endpoint — returns API status. Frontend is served separately on Vercel."""
     return {
         "status": "ok",
         "service": "Document Screening API",
@@ -290,21 +284,6 @@ async def analyze_document(
 
 
 # ---------------------------------------------------------------------------
-# Serve React Frontend (Single-Port Production Deployment)
+# NOTE: Frontend is deployed separately on Vercel.
+# This backend only serves the API endpoints above.
 # ---------------------------------------------------------------------------
-FRONTEND_DIST = Path("dist")
-if not FRONTEND_DIST.exists():
-    FRONTEND_DIST = Path("../frontend/dist")
-
-if FRONTEND_DIST.exists():
-    from fastapi.responses import FileResponse
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        if full_path.startswith("static/") or full_path.startswith("docs") or full_path.startswith("openapi.json") or full_path.startswith("health") or full_path.startswith("analyze-document"):
-            raise HTTPException(status_code=404, detail="Not found")
-        file_path = FRONTEND_DIST / full_path
-        if full_path and file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(FRONTEND_DIST / "index.html")
-

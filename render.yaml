@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: docscreen-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: OPENCV_LOG_LEVEL
+        value: "ERROR"

@@ -1,10 +1,11 @@
 """
 modules/ocr.py — Robust Multi-Engine OCR & Key Field Extraction for Identity Documents.
 
-Dual-Engine Pipeline:
-  1. PassportEye / Pytesseract (if Tesseract binary is available on the system)
-  2. EasyOCR (PyTorch CPU single-thread inference mode with low memory footprint)
-  3. Structured Entity & MRZ Parser (Passport, Aadhaar, PAN, DL, Voter ID)
+Pipeline (Render free-tier friendly):
+  1. PassportEye MRZ reader (passporteye + pytesseract)
+  2. Pytesseract general text extraction (primary)
+  3. EasyOCR fallback (optional — only if installed and pytesseract yields nothing)
+  4. Structured Entity & MRZ Parser (Passport, Aadhaar, PAN, DL, Voter ID)
 """
 from __future__ import annotations
 
@@ -256,49 +257,93 @@ def extract_mrz(image_path: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# General Text OCR Engine (Pytesseract -> EasyOCR Fallback)
+# General Text OCR Engine — Pytesseract primary, EasyOCR optional fallback
 # ---------------------------------------------------------------------------
 _easyocr_reader = None
+_EASYOCR_AVAILABLE: Optional[bool] = None  # None = not yet checked
+
+
+def _is_easyocr_available() -> bool:
+    """Check once whether easyocr is importable (it may not be installed on free tier)."""
+    global _EASYOCR_AVAILABLE
+    if _EASYOCR_AVAILABLE is None:
+        try:
+            import easyocr  # noqa: F401
+            _EASYOCR_AVAILABLE = True
+        except ImportError:
+            _EASYOCR_AVAILABLE = False
+    return _EASYOCR_AVAILABLE
 
 
 def _get_easyocr_reader():
+    """Lazily initialise the EasyOCR reader. Returns None if not available."""
     global _easyocr_reader
+    if not _is_easyocr_available():
+        return None
     if _easyocr_reader is None:
         try:
-            num_threads = min(os.cpu_count() or 4, 4)
+            # Limit threads to avoid OOM on constrained environments
+            num_threads = min(os.cpu_count() or 2, 2)
             os.environ["OMP_NUM_THREADS"] = str(num_threads)
-            import torch
-            torch.set_num_threads(num_threads)
-            torch.set_grad_enabled(False)
-        except Exception:
-            pass
+            try:
+                import torch
+                torch.set_num_threads(num_threads)
+                torch.set_grad_enabled(False)
+            except Exception:
+                pass
 
-        import easyocr
-        try:
-            _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True, quantize=True)
-        except Exception:
-            _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
+            import easyocr
+            try:
+                _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True, quantize=True)
+            except Exception:
+                _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
+        except Exception as exc:
+            print(f"[OCR] EasyOCR initialisation failed: {exc}")
+            _easyocr_reader = None
     return _easyocr_reader
 
 
 def warmup_ocr() -> None:
-    """Pre-warm OCR engine during server startup to avoid first-request latency."""
+    """
+    Pre-warm OCR engine during server startup.
+    Uses pytesseract if available (lightweight). EasyOCR warmup is skipped
+    on free-tier deployments where it's not installed.
+    """
+    # Try pytesseract first — it's the primary engine
+    try:
+        import pytesseract
+        dummy = Image.new("RGB", (100, 30), color=(255, 255, 255))
+        pytesseract.image_to_string(dummy)
+        print("[Startup] pytesseract warmed up successfully.")
+        return
+    except Exception as exc:
+        print(f"[Startup] pytesseract warmup notice: {exc}")
+
+    # Only try EasyOCR if explicitly available (optional)
+    if not _is_easyocr_available():
+        print("[Startup] EasyOCR not installed — pytesseract-only mode active.")
+        return
+
     try:
         reader = _get_easyocr_reader()
-        dummy_img = np.full((64, 256, 3), 255, dtype=np.uint8)
-        reader.readtext(dummy_img, detail=0)
+        if reader is not None:
+            dummy_img = np.full((64, 256, 3), 255, dtype=np.uint8)
+            reader.readtext(dummy_img, detail=0)
+            print("[Startup] EasyOCR warmed up successfully.")
     except Exception as exc:
-        print(f"[Startup] OCR warmup notice: {exc}")
+        print(f"[Startup] EasyOCR warmup notice: {exc}")
 
 
 def extract_general_text(image_path: str) -> dict:
     """
-    Extract text and key fields using Pytesseract (if available) or EasyOCR (quantized multi-threaded mode).
+    Extract text and key fields using:
+      1. Pytesseract (primary — fast, low memory)
+      2. EasyOCR (optional fallback — only if installed and pytesseract yields nothing)
     """
     raw_text: list[str] = []
     full_text = ""
 
-    # Strategy A: Try lightweight Pytesseract
+    # Strategy A: Pytesseract (primary engine, always tried first)
     try:
         import pytesseract
         with Image.open(image_path) as img:
@@ -309,21 +354,31 @@ def extract_general_text(image_path: str) -> dict:
         raw_text = []
         full_text = ""
 
-    # Strategy B: If Pytesseract produced no text, use EasyOCR
-    if not raw_text:
+    # Strategy B: EasyOCR fallback — only if pytesseract produced nothing AND EasyOCR is installed
+    if not raw_text and _is_easyocr_available():
         try:
             reader = _get_easyocr_reader()
-            with Image.open(image_path) as img:
-                img = ImageOps.exif_transpose(img)
-                w, h = img.size
-                if max(w, h) > 1000:
-                    scale = 1000 / max(w, h)
-                    img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
-                ocr_img = np.array(img.convert("RGB"))
+            if reader is not None:
+                with Image.open(image_path) as img:
+                    img = ImageOps.exif_transpose(img)
+                    w, h = img.size
+                    if max(w, h) > 1000:
+                        scale = 1000 / max(w, h)
+                        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+                    ocr_img = np.array(img.convert("RGB"))
 
-            try:
-                import torch
-                with torch.inference_mode():
+                try:
+                    import torch
+                    with torch.inference_mode():
+                        results = reader.readtext(
+                            ocr_img,
+                            detail=1,
+                            paragraph=False,
+                            batch_size=1,
+                            canvas_size=800,
+                            mag_ratio=1.0,
+                        )
+                except Exception:
                     results = reader.readtext(
                         ocr_img,
                         detail=1,
@@ -332,18 +387,9 @@ def extract_general_text(image_path: str) -> dict:
                         canvas_size=800,
                         mag_ratio=1.0,
                     )
-            except Exception:
-                results = reader.readtext(
-                    ocr_img,
-                    detail=1,
-                    paragraph=False,
-                    batch_size=1,
-                    canvas_size=800,
-                    mag_ratio=1.0,
-                )
 
-            raw_text = [r[1].strip() for r in results if r[1].strip()]
-            full_text = "\n".join(raw_text)
+                raw_text = [r[1].strip() for r in results if r[1].strip()]
+                full_text = "\n".join(raw_text)
         except Exception:
             pass
 
