@@ -46,8 +46,9 @@ urllib.request.urlretrieve(sface_url, 'models/face_recognition_sface_2021dec.onn
 "
 RUN python generate_test_assets.py
 
-# Expose server port
-EXPOSE 8000
+# Expose server port (7860 for Hugging Face Spaces, or dynamic $PORT)
+RUN chmod -R 777 /app
+EXPOSE 7860
 
-# Run FastAPI serving both API and Frontend with dynamic Railway PORT support
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Run FastAPI serving both API and Frontend
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}"]
