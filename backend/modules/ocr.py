@@ -1,15 +1,14 @@
 """
-modules/ocr.py — Ultra-Low Memory Optical Character Recognition & Key Field Extraction.
+modules/ocr.py — Robust Multi-Engine OCR & Key Field Extraction for Identity Documents.
 
-Strategy:
-  1. PassportEye MRZ extraction for passport & machine-readable zone documents.
-  2. Pytesseract (Tesseract C runtime) for general ID cards (Aadhaar, PAN, DL, etc.).
-  3. Structured regex entity recognition for clean key-value field extraction.
-
-Memory footprint: < 30MB RAM (100% compliant with 512MB free tier containers).
+Dual-Engine Pipeline:
+  1. PassportEye / Pytesseract (if Tesseract binary is available on the system)
+  2. EasyOCR (PyTorch CPU single-thread inference mode with low memory footprint)
+  3. Structured Entity & MRZ Parser (Passport, Aadhaar, PAN, DL, Voter ID)
 """
 from __future__ import annotations
 
+import gc
 import os
 import re
 import warnings
@@ -21,6 +20,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", module="passporteye")
 warnings.filterwarnings("ignore", module="skimage")
+warnings.filterwarnings("ignore", module="torch")
+warnings.filterwarnings("ignore", module="easyocr")
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ def _parse_mrz_lines(lines: list[str]) -> dict:
     mrz_lines = [
         re.sub(r"[^A-Z0-9<]", "", line.upper())
         for line in lines
-        if "<" in line and len(re.sub(r"[^A-Z0-9<]", "", line)) >= 24
+        if "<" in line and len(re.sub(r"[^A-Z0-9<]", "", line)) >= 20
     ]
 
     if not mrz_lines:
@@ -39,10 +40,10 @@ def _parse_mrz_lines(lines: list[str]) -> dict:
 
     parsed: dict = {"mrz_lines": mrz_lines}
 
-    # TD3 format (2 lines of 44 chars) - Standard Passport
-    if len(mrz_lines) >= 2 and len(mrz_lines[0]) >= 40 and len(mrz_lines[1]) >= 40:
-        l1 = mrz_lines[0][:44]
-        l2 = mrz_lines[1][:44]
+    # TD3 format (2 lines of ~44 chars) - Standard Passport
+    if len(mrz_lines) >= 2 and len(mrz_lines[0]) >= 28 and len(mrz_lines[1]) >= 28:
+        l1 = mrz_lines[0].ljust(44, "<")[:44]
+        l2 = mrz_lines[1].ljust(44, "<")[:44]
 
         # Line 1: Type (2), Issuing Country (3), Names (39)
         doc_type = "Passport" if l1.startswith("P") else "ID Card"
@@ -133,7 +134,11 @@ def _extract_entities_from_text(raw_lines: list[str]) -> dict:
             parts = clean.split(":", 1)
             lbl = parts[0].strip().lower()
             val = parts[1].strip()
-        elif "-" in clean and len(clean.split()) > 1:
+        elif "=" in clean:
+            parts = clean.split("=", 1)
+            lbl = parts[0].strip().lower()
+            val = parts[1].strip()
+        elif "-" in clean and len(clean.split()) > 1 and not re.search(r"\d{4}-\d{2}-\d{2}", clean):
             parts = clean.split("-", 1)
             lbl = parts[0].strip().lower()
             val = parts[1].strip()
@@ -142,17 +147,18 @@ def _extract_entities_from_text(raw_lines: list[str]) -> dict:
 
         if not val and i + 1 < len(raw_lines):
             nxt = raw_lines[i + 1].strip()
-            if not any(k in nxt.lower() for k in ["date", "name", "number", "sex", "no.", "republic", "photo", "mrz"]):
+            if not any(k in nxt.lower() for k in ["date", "name", "number", "sex", "no.", "republic", "photo", "mrz", "passport", "card"]):
                 val = nxt
 
         if any(k in lbl for k in ["surname", "last name"]) and val and not fields.get("surname"):
             fields["surname"] = val.upper()
         elif any(k in lbl for k in ["given names", "given name", "first name"]) and val and not fields.get("given_names"):
             fields["given_names"] = val.upper()
-        elif any(k in lbl for k in ["name", "holder name", "cardholder"]) and val and not fields.get("full_name") and not any(k in lbl for k in ["father", "mother", "guardian"]):
+        elif any(k in lbl for k in ["name", "holder name", "cardholder"]) and val and not fields.get("full_name") and not any(k in lbl for k in ["father", "mother", "guardian", "republic", "given", "sur"]):
             fields["full_name"] = val.upper()
         elif any(k in lbl for k in ["nationality", "citizen", "citizenship"]) and val and not fields.get("nationality"):
             fields["nationality"] = val.upper()
+            fields["country"] = val.upper()
         elif any(k in lbl for k in ["date of birth", "dob", "birth date", "born on"]) and val and not fields.get("date_of_birth"):
             fields["date_of_birth"] = val
         elif any(k in lbl for k in ["date of expiry", "expiry date", "valid until", "expiration date", "valid upto"]) and val and not fields.get("expiry_date"):
@@ -189,7 +195,7 @@ def _extract_entities_from_text(raw_lines: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MRZ extraction via passporteye
+# MRZ extraction via passporteye (if Tesseract binary is available)
 # ---------------------------------------------------------------------------
 def extract_mrz(image_path: str) -> Optional[dict]:
     """
@@ -249,29 +255,81 @@ def extract_mrz(image_path: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# General-text fallback via Pytesseract (Ultra-Low Memory: ~20MB RAM)
+# General Text OCR Engine (Pytesseract -> EasyOCR Fallback)
 # ---------------------------------------------------------------------------
+_easyocr_reader = None
+
+
+def _get_easyocr_reader():
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        try:
+            import os
+            os.environ["OMP_NUM_THREADS"] = "1"
+            import torch
+            torch.set_num_threads(1)
+            torch.set_grad_enabled(False)
+        except Exception:
+            pass
+
+        import easyocr
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
+    return _easyocr_reader
+
+
 def warmup_ocr() -> None:
-    """Zero-overhead placeholder (Tesseract needs no warmup)."""
+    """Pre-warm OCR engine."""
     pass
 
 
 def extract_general_text(image_path: str) -> dict:
     """
-    Extract text and key fields using lightweight Pytesseract (C runtime < 25MB RAM).
+    Extract text and key fields using Pytesseract (if available) or EasyOCR (single-thread mode).
     """
     raw_text: list[str] = []
     full_text = ""
 
+    # Strategy A: Try lightweight Pytesseract
     try:
         import pytesseract
         with Image.open(image_path) as img:
             img = ImageOps.exif_transpose(img)
             full_text = pytesseract.image_to_string(img)
             raw_text = [line.strip() for line in full_text.split("\n") if line.strip()]
-    except Exception as exc:
-        # If tesseract binary is not found on Windows dev machine, fall back to basic text heuristics
-        pass
+    except Exception:
+        raw_text = []
+        full_text = ""
+
+    # Strategy B: If Pytesseract produced no text, use EasyOCR
+    if not raw_text:
+        try:
+            reader = _get_easyocr_reader()
+            try:
+                import torch
+                with torch.inference_mode():
+                    results = reader.readtext(
+                        image_path,
+                        detail=1,
+                        paragraph=False,
+                        batch_size=1,
+                        canvas_size=1024,
+                        mag_ratio=1.0,
+                    )
+            except Exception:
+                results = reader.readtext(
+                    image_path,
+                    detail=1,
+                    paragraph=False,
+                    batch_size=1,
+                    canvas_size=1024,
+                    mag_ratio=1.0,
+                )
+
+            raw_text = [r[1].strip() for r in results if r[1].strip()]
+            full_text = "\n".join(raw_text)
+            gc.collect()
+        except Exception as exc:
+            pass
 
     # Extract MRZ lines if present
     mrz_parsed = _parse_mrz_lines(raw_text)

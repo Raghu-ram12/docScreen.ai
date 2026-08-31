@@ -1,4 +1,5 @@
-# Ultra-Low Memory Dependencies (< 80MB RAM Total)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 fastapi>=0.115.0
 uvicorn[standard]>=0.31.1
 python-multipart>=0.0.9
@@ -8,3 +9,6 @@ opencv-python-headless>=4.8.0
 numpy>=1.24.0
 passporteye>=2.2.0
 pytesseract>=0.3.10
+torch>=2.0.0
+torchvision>=0.15.0
+easyocr>=1.7.0
