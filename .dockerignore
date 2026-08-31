@@ -1,0 +1,11 @@
+frontend/node_modules
+node_modules
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+backend/uploads/*
+backend/static/ela_*.jpg
+uvicorn_*.txt
