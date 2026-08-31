@@ -14,7 +14,7 @@ FROM python:3.10-slim
 LABEL maintainer="SIH Hackathon Team"
 LABEL description="Document Screening Console — Full Stack AI Screening Application"
 
-# System dependencies
+# Lightweight system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Python dependencies
+# Python dependencies (CPU-only, no C++ dlib compilation)
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
