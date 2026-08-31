@@ -100,6 +100,82 @@ def get_face_encoding(image_path: str) -> Optional[list]:
     return feature.flatten().tolist()
 
 
+def _match_with_face_recognition(
+    doc_image_path: str,
+    live_image_path: Optional[str] = None,
+    doc_number: Optional[str] = None,
+    threshold: float = 0.60,
+) -> dict:
+    """Fallback face matching using the face_recognition library (dlib)."""
+    try:
+        import face_recognition
+
+        doc_img = face_recognition.load_image_file(doc_image_path)
+        doc_encs = face_recognition.face_encodings(doc_img)
+        if not doc_encs:
+            return {
+                "matched": None,
+                "distance": None,
+                "threshold": threshold,
+                "match_status": "no_face_in_doc",
+                "note": "No face detected in document image (face_recognition fallback)",
+            }
+        doc_enc = doc_encs[0]
+
+        if live_image_path:
+            live_img = face_recognition.load_image_file(live_image_path)
+            live_encs = face_recognition.face_encodings(live_img)
+            if not live_encs:
+                return {
+                    "matched": None,
+                    "distance": None,
+                    "threshold": threshold,
+                    "match_status": "no_face_in_selfie",
+                    "note": "No face detected in selfie capture (face_recognition fallback)",
+                }
+            live_enc = live_encs[0]
+        elif doc_number:
+            from db import get_face_encoding_from_db
+            db_enc = get_face_encoding_from_db(doc_number)
+            if db_enc is not None:
+                live_enc = np.array(db_enc, dtype=np.float64)
+            else:
+                return {
+                    "matched": None,
+                    "distance": None,
+                    "threshold": threshold,
+                    "match_status": "no_selfie",
+                    "note": "No selfie provided and no face record in database",
+                }
+        else:
+            return {
+                "matched": None,
+                "distance": None,
+                "threshold": threshold,
+                "match_status": "no_selfie",
+                "note": "No selfie provided",
+            }
+
+        dist = float(face_recognition.face_distance([live_enc], doc_enc)[0])
+        matched = bool(dist <= threshold)
+
+        return {
+            "matched": matched,
+            "distance": round(dist, 4),
+            "threshold": threshold,
+            "match_status": "ok",
+            "note": f"Face match confirmed via face_recognition (distance: {round(dist, 3)})" if matched else f"Face mismatch via face_recognition (distance: {round(dist, 3)})",
+        }
+    except Exception as exc:
+        return {
+            "matched": None,
+            "distance": None,
+            "threshold": threshold,
+            "match_status": "error",
+            "note": f"Face match fallback error: {exc}",
+        }
+
+
 def match_faces(
     doc_image_path: str,
     live_image_path: Optional[str] = None,
@@ -109,24 +185,32 @@ def match_faces(
     """
     Compare the face in the document photo against a live selfie or database record.
 
+    Uses OpenCV's YuNet & SFace models by default, with automatic fallback to
+    the face_recognition library if ONNX models fail to initialize.
+
     Returns:
         matched       bool | None   — True/False, or None if unavailable
         distance      float | None  — Normalized distance (0 = identical, 1 = completely different)
-        threshold     float         — Decision threshold (default 0.60)
+        threshold     float         — Decision threshold (default 0.60, tunable by caller)
         match_status  str           — 'ok', 'no_selfie', 'no_face_in_doc', 'no_face_in_selfie', 'library_unavailable', 'error'
         note          str           — Descriptive status note
     """
     if not _ensure_models():
-        # Fallback check for face_recognition library if available
         try:
             import face_recognition  # type: ignore
+            return _match_with_face_recognition(
+                doc_image_path=doc_image_path,
+                live_image_path=live_image_path,
+                doc_number=doc_number,
+                threshold=threshold,
+            )
         except ImportError:
             return {
                 "matched": None,
                 "distance": None,
                 "threshold": threshold,
                 "match_status": "library_unavailable",
-                "note": "Face recognition models could not be loaded",
+                "note": "Face recognition models could not be loaded and fallback library is unavailable",
             }
 
     try:
@@ -208,15 +292,16 @@ def match_faces(
                 "note": "No selfie provided",
             }
 
-        # Match using Cosine Similarity (SFace cosine score is between -1 and 1, typically 0.36+ is a match)
+        # Match using Cosine Similarity (SFace cosine score is between -1 and 1)
         cosine_sim = float(_recognizer.match(doc_feat, live_feat, cv2.FaceRecognizerSF_FR_COSINE))
 
-        # Map cosine similarity [-1, 1] to normalized distance [0, 1]
+        # Map cosine similarity [-1, 1] monotonically to normalized distance [0, 1]:
         # cosine = 1.0 (identical) -> distance = 0.0
-        # cosine = 0.363 (standard SFace threshold) -> distance = ~0.55
-        # cosine <= 0.0 -> distance = 1.0
+        # cosine = 0.363 (standard SFace threshold) -> distance = ~0.467
+        # cosine <= -0.363 -> distance = 1.0
         norm_distance = round(max(0.0, min(1.0, (1.0 - cosine_sim) / 1.363)), 4)
-        matched = bool(norm_distance <= threshold and cosine_sim >= 0.36)
+        # Decision is determined strictly by the threshold parameter
+        matched = bool(norm_distance <= threshold)
 
         return {
             "matched": matched,

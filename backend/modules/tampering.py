@@ -145,22 +145,32 @@ def check_metadata(image_path: str) -> dict:
     """
     Inspect EXIF metadata for evidence of editing software.
 
+    Heuristic Rationale & Limitations:
+    - ID documents in border screening workflows are frequently flatbed/document scans,
+      mobile document scanner crops, or web uploads where EXIF metadata is stripped
+      by compression or client privacy settings.
+    - Penalizing images solely for the absence of EXIF metadata (previously 0.2) produced
+      false positive tampering penalties on legitimate scanned IDs.
+    - We therefore treat missing EXIF neutrally (metadata_score: 0.0) and only penalize
+      when explicit editing/manipulation software tags (Photoshop, GIMP, Canva, etc.)
+      are detected in the metadata.
+
     Returns:
         metadata_score  float [0, 1]
         suspicious_tags list of str
         has_exif        bool
+        note            str
     """
     try:
-        img = Image.open(image_path)
-        exif_data = img._getexif() if hasattr(img, "_getexif") else None
+        with Image.open(image_path) as img:
+            exif_data = img._getexif() if hasattr(img, "_getexif") else None
 
         if not exif_data:
-            # No EXIF at all — mildly suspicious (real camera photos have EXIF)
             return {
-                "metadata_score":  0.2,
+                "metadata_score":  0.0,
                 "suspicious_tags": [],
                 "has_exif":        False,
-                "note":            "No EXIF data found",
+                "note":            "No EXIF metadata present (normal for scanned documents and web uploads)",
             }
 
         # Map tag IDs to human-readable names
@@ -184,6 +194,7 @@ def check_metadata(image_path: str) -> dict:
             "metadata_score":  metadata_score,
             "suspicious_tags": suspicious,
             "has_exif":        True,
+            "note":            f"EXIF inspected: {len(suspicious)} suspicious editing tags found" if suspicious else "EXIF metadata clean",
         }
 
     except Exception as exc:

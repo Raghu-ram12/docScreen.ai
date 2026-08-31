@@ -15,7 +15,13 @@ from __future__ import annotations
 from typing import Optional
 
 
-# Band thresholds (inclusive upper bound)
+# Policy Rules:
+# - Standard Risk Bands: LOW (0.00-0.35), MEDIUM (0.36-0.65), HIGH (0.66-1.00).
+# - Blacklist Override: Any blacklisted document forces the HIGH risk band immediately.
+# - Expired Document Floor: An expired document is legally invalid at a border checkpoint.
+#   Even if tampering and face verification scores are completely clean (0.0), an expired
+#   document is floored at a minimum of MEDIUM risk so it cannot pass screening without
+#   officer review / secondary inspection.
 _BANDS = [
     (0.35, "LOW"),
     (0.65, "MEDIUM"),
@@ -45,8 +51,13 @@ def _check_is_expired(expiry_str: Optional[str]) -> bool:
         return False
 
 
-def _validation_to_score(validation_result: dict, expiry_override: Optional[str] = None) -> float:
-    """Convert a validation result dict to a risk sub-score in [0, 1]."""
+def _validation_to_score(validation_result: dict, expiry_override: Optional[str] = None) -> tuple[float, str]:
+    """
+    Convert a validation result dict to a risk sub-score in [0, 1] and resolved status.
+
+    If the document registry status is 'valid' but the expiry date is in the past,
+    the status is dynamically upgraded to 'expired' and scored at 0.7.
+    """
     status = validation_result.get("status", "not_found")
     expiry_date = validation_result.get("expiry_date") or expiry_override
     if status == "valid" and _check_is_expired(expiry_date):
@@ -58,7 +69,7 @@ def _validation_to_score(validation_result: dict, expiry_override: Optional[str]
         "expired":     0.7,
         "blacklisted": 1.0,
     }
-    return mapping.get(status, 0.5)
+    return mapping.get(status, 0.5), status
 
 
 def _face_distance_to_score(distance: Optional[float], match_status: str = "") -> float:
@@ -116,7 +127,7 @@ def compute_risk(
         breakdown  dict   — per-component sub-scores and weights
         forced_high bool  — True if blacklist forced the HIGH band
     """
-    v_score  = _validation_to_score(validation_result)
+    v_score, resolved_status = _validation_to_score(validation_result)
     t_score  = float(min(max(tampering_score, 0.0), 1.0))
     f_score  = _face_distance_to_score(face_score, match_status=face_match_status)
 
@@ -128,10 +139,13 @@ def compute_risk(
     )
     weighted_score = round(min(weighted_score, 1.0), 4)
 
-    # Determine band
+    # Determine band according to policy
     forced_high = blacklist_flag
     if forced_high:
         band = "HIGH"
+    elif resolved_status == "expired":
+        # Expired documents are legally invalid; floor at minimum MEDIUM risk band
+        band = "HIGH" if weighted_score > 0.65 else "MEDIUM"
     else:
         band = "HIGH"  # default fallback
         for threshold, label in _BANDS:
@@ -148,7 +162,7 @@ def compute_risk(
                 "sub_score": round(v_score, 4),
                 "weight":    0.25,
                 "weighted":  round(0.25 * v_score, 4),
-                "status":    validation_result.get("status", "unknown"),
+                "status":    resolved_status,
             },
             "tampering": {
                 "sub_score": round(t_score, 4),
