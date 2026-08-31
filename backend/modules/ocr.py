@@ -276,7 +276,12 @@ def _get_reader():
     global _easyocr_reader
     if _easyocr_reader is None:
         import easyocr  # type: ignore
-        # Initialize with CPU and disable quant warnings
+        import torch
+        try:
+            torch.set_num_threads(1)
+            torch.set_grad_enabled(False)
+        except Exception:
+            pass
         _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
     return _easyocr_reader
 
@@ -292,21 +297,39 @@ def warmup_ocr() -> None:
 def extract_general_text(image_path: str) -> dict:
     """
     Extract all text and structure key identity fields using EasyOCR + heuristic regex parsing.
+    Protected with low-memory CPU constraints for 512MB RAM cloud environments.
     """
+    import gc
     try:
         reader = _get_reader()
-        # Fast inference parameters for responsive response times on CPU
-        results = reader.readtext(
-            image_path,
-            detail=1,
-            paragraph=False,
-            batch_size=4,
-            canvas_size=1280,
-            mag_ratio=1.0,
-        )
+
+        # Try running inside torch.inference_mode if available to eliminate all autograd allocations
+        try:
+            import torch
+            with torch.inference_mode():
+                results = reader.readtext(
+                    image_path,
+                    detail=1,
+                    paragraph=False,
+                    batch_size=1,
+                    canvas_size=1024,
+                    mag_ratio=1.0,
+                )
+        except Exception:
+            results = reader.readtext(
+                image_path,
+                detail=1,
+                paragraph=False,
+                batch_size=1,
+                canvas_size=1024,
+                mag_ratio=1.0,
+            )
 
         raw_text = [r[1].strip() for r in results if r[1].strip()]
         full_text = "\n".join(raw_text)
+
+        # Free temporary tensor memory immediately
+        gc.collect()
 
         # First, check if text contains MRZ lines that can be parsed directly
         mrz_parsed = _parse_mrz_lines(raw_text)
@@ -331,6 +354,7 @@ def extract_general_text(image_path: str) -> dict:
         return combined_fields
 
     except Exception as exc:
+        gc.collect()
         return {
             "document_type": "Unknown",
             "document_number": "",
@@ -338,4 +362,5 @@ def extract_general_text(image_path: str) -> dict:
             "full_text": "",
             "error": str(exc),
         }
+
 

@@ -195,13 +195,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"  Warning downloading face models: {e}")
 
-    try:
-        import easyocr
-        print("  Pre-warming EasyOCR detection and recognition weights...")
-        easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
-    except Exception as e:
-        print(f"  Warning pre-warming EasyOCR: {e}")
-
     print("Done. Contents of test_assets/:")
     for f in sorted(Path("test_assets").iterdir()):
         size_kb = f.stat().st_size // 1024

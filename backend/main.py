@@ -10,6 +10,14 @@ import uuid
 import warnings
 from pathlib import Path
 
+# Restrict multi-threading to prevent OOM on 512MB RAM cloud containers (Render/Railway)
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
 # Suppress 3rd party deprecation and backend warnings (passporteye, skimage, torch, easyocr)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -18,8 +26,13 @@ warnings.filterwarnings("ignore", module="skimage")
 warnings.filterwarnings("ignore", module="torch")
 warnings.filterwarnings("ignore", module="easyocr")
 
-# Suppress OpenCV DNN backend warnings
-os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+try:
+    import torch
+    torch.set_num_threads(1)
+    torch.set_grad_enabled(False)
+except Exception:
+    pass
+
 try:
     import cv2
     if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
