@@ -276,8 +276,17 @@ def _get_reader():
     global _easyocr_reader
     if _easyocr_reader is None:
         import easyocr  # type: ignore
-        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        # Initialize with CPU and disable quant warnings
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
     return _easyocr_reader
+
+
+def warmup_ocr() -> None:
+    """Pre-load OCR reader into RAM during server boot."""
+    try:
+        _get_reader()
+    except Exception as e:
+        print(f"[OCR] Warmup warning: {e}")
 
 
 def extract_general_text(image_path: str) -> dict:
@@ -286,7 +295,15 @@ def extract_general_text(image_path: str) -> dict:
     """
     try:
         reader = _get_reader()
-        results = reader.readtext(image_path, detail=1, paragraph=False)
+        # Fast inference parameters for responsive response times on CPU
+        results = reader.readtext(
+            image_path,
+            detail=1,
+            paragraph=False,
+            batch_size=4,
+            canvas_size=1280,
+            mag_ratio=1.0,
+        )
 
         raw_text = [r[1].strip() for r in results if r[1].strip()]
         full_text = "\n".join(raw_text)
@@ -321,3 +338,4 @@ def extract_general_text(image_path: str) -> dict:
             "full_text": "",
             "error": str(exc),
         }
+

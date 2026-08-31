@@ -29,17 +29,40 @@ try:
 except Exception:
     pass
 
+from contextlib import asynccontextmanager
+import threading
+from PIL import Image, ImageOps
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
-# App setup
+# App lifespan (pre-warm AI models in background during boot)
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    def _warmup():
+        try:
+            from modules.ocr import warmup_ocr
+            warmup_ocr()
+        except Exception as e:
+            print(f"[Startup] OCR warmup info: {e}")
+        try:
+            from modules.face_match import _ensure_models
+            _ensure_models()
+        except Exception as e:
+            print(f"[Startup] Face model info: {e}")
+
+    threading.Thread(target=_warmup, daemon=True).start()
+    yield
+
+
 app = FastAPI(
     title="Document Screening API",
     description="AI-powered identity-document screening for border checkpoints (SIH MVP)",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -56,6 +79,22 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def _optimize_uploaded_image(file_path: Path, max_dim: int = 1400) -> None:
+    """Downscale large camera images (e.g. 4000x3000) for 10x faster OCR and tampering inference."""
+    try:
+        with Image.open(file_path) as img:
+            img = ImageOps.exif_transpose(img)
+            w, h = img.size
+            if max(w, h) > max_dim:
+                scale = max_dim / max(w, h)
+                new_size = (int(w * scale), int(h * scale))
+                img = img.resize(new_size, Image.Resampling.BILINEAR)
+            img = img.convert("RGB")
+            img.save(file_path, format="JPEG", quality=90)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +180,10 @@ async def analyze_document(
                 if doc_path.exists():
                     doc_path.unlink()
                 raise HTTPException(status_code=400, detail="Selfie file size exceeds 10MB limit.")
-            f.write(content)
+    # Optimize image dimensions for sub-second CPU inference
+    _optimize_uploaded_image(doc_path, max_dim=1400)
+    if selfie_path and selfie_path.exists():
+        _optimize_uploaded_image(selfie_path, max_dim=900)
 
     try:
         # ---- 1. OCR --------------------------------------------------------

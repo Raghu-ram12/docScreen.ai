@@ -179,6 +179,29 @@ if __name__ == "__main__":
     # Face images
     make_face_images()
 
+    print("Pre-downloading AI models for fast runtime response...")
+    try:
+        import urllib.request
+        MODELS_DIR = Path("models")
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        yunet_path = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
+        sface_path = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
+        if not yunet_path.exists():
+            print("  Downloading YuNet model...")
+            urllib.request.urlretrieve("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx", str(yunet_path))
+        if not sface_path.exists():
+            print("  Downloading SFace model...")
+            urllib.request.urlretrieve("https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx", str(sface_path))
+    except Exception as e:
+        print(f"  Warning downloading face models: {e}")
+
+    try:
+        import easyocr
+        print("  Pre-warming EasyOCR detection and recognition weights...")
+        easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
+    except Exception as e:
+        print(f"  Warning pre-warming EasyOCR: {e}")
+
     print("Done. Contents of test_assets/:")
     for f in sorted(Path("test_assets").iterdir()):
         size_kb = f.stat().st_size // 1024
