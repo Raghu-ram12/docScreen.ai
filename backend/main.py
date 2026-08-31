@@ -59,12 +59,33 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health check & Root status
 # ---------------------------------------------------------------------------
 @app.get("/health", tags=["meta"])
+@app.head("/health", tags=["meta"])
 def health_check():
     """Liveness probe — returns ok when the server is running."""
     return {"status": "ok"}
+
+
+@app.get("/", tags=["meta"])
+@app.head("/", tags=["meta"])
+def root_status():
+    """Root endpoint for status check and API navigation."""
+    # If React frontend dist is present, let the SPA handler serve index.html
+    if (Path("dist") / "index.html").exists() or (Path("../frontend/dist") / "index.html").exists():
+        from fastapi.responses import FileResponse
+        dist_path = Path("dist") if (Path("dist") / "index.html").exists() else Path("../frontend/dist")
+        return FileResponse(dist_path / "index.html")
+
+    return {
+        "status": "ok",
+        "service": "Document Screening API",
+        "version": "0.1.0",
+        "docs_url": "/docs",
+        "health_url": "/health",
+        "analyze_endpoint": "/analyze-document"
+    }
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
