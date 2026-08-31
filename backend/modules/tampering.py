@@ -68,30 +68,42 @@ def compute_ela(image_path: str, quality: int = 90) -> dict:
 
         mean_ela = float(diff.mean())
 
-        # Block-level analysis with smaller blocks (16×16) for finer resolution
+        # Vectorized block-level analysis with 16x16 blocks
         block_size = 16
         h, w = diff.shape[:2]
-        block_means = []
-        for y in range(0, h - block_size + 1, block_size):
-            for x in range(0, w - block_size + 1, block_size):
-                bm = float(diff[y:y+block_size, x:x+block_size].mean())
-                block_means.append(bm)
+        h_crop = (h // block_size) * block_size
+        w_crop = (w // block_size) * block_size
 
-        if not block_means:
-            block_means = [mean_ela]
+        if h_crop > 0 and w_crop > 0:
+            diff_cropped = diff[:h_crop, :w_crop]
+            arr_bm = diff_cropped.reshape(
+                h_crop // block_size, block_size,
+                w_crop // block_size, block_size,
+                diff.shape[2]
+            ).mean(axis=(1, 3, 4)).flatten()
+        else:
+            arr_bm = np.array([mean_ela])
 
-        arr_bm = np.array(block_means)
-        q1 = float(np.percentile(arr_bm, 25))
-        q3 = float(np.percentile(arr_bm, 75))
-        iqr = q3 - q1
-        fence = q3 + 2.0 * iqr
+        # If overall error is minimal across the entire image (clean authentic image),
+        # don't trigger false positive outliers due to flat background collapsing IQR to 0.
+        if mean_ela < 1.0:
+            ela_score = 0.0
+            outlier_count = 0
+            outlier_fraction = 0.0
+            fence = 5.0
+        else:
+            q1 = float(np.percentile(arr_bm, 25))
+            q3 = float(np.percentile(arr_bm, 75))
+            iqr = max(q3 - q1, 2.0)
+            # Baseline minimum fence so standard text edges aren't flagged as tampered
+            fence = max(q3 + 2.5 * iqr, 8.0)
 
-        # Count outlier blocks and compute fraction
-        outlier_count = int(np.sum(arr_bm > fence))
-        outlier_fraction = outlier_count / len(arr_bm)
+            # Count outlier blocks and compute fraction
+            outlier_count = int(np.sum(arr_bm > fence))
+            outlier_fraction = outlier_count / len(arr_bm)
 
-        # Score: 0% outliers → 0.0, 5%+ outliers → 1.0
-        ela_score = min(outlier_fraction / 0.05, 1.0)
+            # Score: calibrated so that isolated genuine tampered sections produce proportional risk score
+            ela_score = min(outlier_fraction / 0.08, 1.0)
 
         # Build and save heatmap (amplified for visibility)
         diff_vis = np.clip(diff * 10, 0, 255).astype(np.uint8)
@@ -206,19 +218,24 @@ def block_noise_check(image_path: str, block_size: int = 64) -> dict:
         if img is None:
             return {"noise_score": 0.0, "cv_of_variance": 0.0, "num_outlier_blocks": 0, "error": "cv2 could not read image"}
 
-        h, w = img.shape
-        variances = []
+        # Compute Laplacian once across entire image for maximum performance
+        lap = cv2.Laplacian(img, cv2.CV_64F)
+        h, w = lap.shape
+        h_crop = (h // block_size) * block_size
+        w_crop = (w // block_size) * block_size
 
-        for y in range(0, h - block_size + 1, block_size):
-            for x in range(0, w - block_size + 1, block_size):
-                block = img[y : y + block_size, x : x + block_size]
-                lap = cv2.Laplacian(block, cv2.CV_64F)
-                variances.append(lap.var())
+        if h_crop > 0 and w_crop > 0:
+            blocks = lap[:h_crop, :w_crop].reshape(
+                h_crop // block_size, block_size,
+                w_crop // block_size, block_size
+            )
+            arr = blocks.var(axis=(1, 3)).flatten()
+        else:
+            arr = np.array([lap.var()])
 
-        if len(variances) < 2:
+        if len(arr) < 2:
             return {"noise_score": 0.0, "cv_of_variance": 0.0, "num_outlier_blocks": 0}
 
-        arr = np.array(variances)
         mean_v = arr.mean()
         std_v  = arr.std()
         cv     = std_v / (mean_v + 1e-9)  # coefficient of variation
@@ -233,7 +250,7 @@ def block_noise_check(image_path: str, block_size: int = 64) -> dict:
             "noise_score":        noise_score,
             "cv_of_variance":     float(cv),
             "num_outlier_blocks": outliers,
-            "num_blocks":         len(variances),
+            "num_blocks":         len(arr),
         }
 
     except ImportError:

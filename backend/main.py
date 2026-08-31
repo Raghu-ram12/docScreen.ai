@@ -10,12 +10,15 @@ import uuid
 import warnings
 from pathlib import Path
 
-# Restrict multi-threading to prevent OOM on 512MB RAM cloud containers (Render/Railway)
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+from concurrent.futures import ThreadPoolExecutor
+
+# Allocate CPU threads for PyTorch, OpenCV, and EasyOCR
+num_threads = str(min(os.cpu_count() or 4, 4))
+os.environ["OMP_NUM_THREADS"] = num_threads
+os.environ["OPENBLAS_NUM_THREADS"] = num_threads
+os.environ["MKL_NUM_THREADS"] = num_threads
+os.environ["VECLIB_MAXIMUM_THREADS"] = num_threads
+os.environ["NUMEXPR_NUM_THREADS"] = num_threads
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
 # Suppress 3rd party deprecation and backend warnings (passporteye, skimage)
@@ -85,8 +88,8 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-def _optimize_uploaded_image(file_path: Path, max_dim: int = 1400) -> None:
-    """Downscale large camera images (e.g. 4000x3000) for 10x faster OCR and tampering inference."""
+def _optimize_uploaded_image(file_path: Path, max_dim: int = 1200) -> None:
+    """Downscale large camera images for 5-10x faster OCR and tampering inference."""
     try:
         with Image.open(file_path) as img:
             img = ImageOps.exif_transpose(img)
@@ -99,6 +102,15 @@ def _optimize_uploaded_image(file_path: Path, max_dim: int = 1400) -> None:
             img.save(file_path, format="JPEG", quality=90)
     except Exception:
         pass
+
+
+def _run_ocr_pipeline(image_path: str):
+    """Run dual-engine OCR pipeline."""
+    from modules.ocr import extract_mrz, extract_general_text
+    mrz_fields = extract_mrz(image_path)
+    if mrz_fields:
+        return mrz_fields, "passporteye_mrz"
+    return extract_general_text(image_path), "easyocr_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +168,11 @@ async def analyze_document(
     selfie: UploadFile = File(None, description="Optional live selfie for face verification"),
 ):
     """
-    Full document screening pipeline:
+    Full document screening pipeline executed concurrently for maximum throughput:
       1. OCR — extract fields / MRZ
-      2. Validation — check against mock DB
-      3. Tampering — ELA + metadata + noise checks
-      4. Face verification — compare document photo to selfie or DB record
+      2. Tampering — ELA + metadata + noise checks
+      3. Face verification — compare document photo to selfie or DB record
+      4. Validation — check against DB
       5. Risk scoring — weighted aggregate
     """
     validate_upload(document, "document")
@@ -185,36 +197,55 @@ async def analyze_document(
                     doc_path.unlink()
                 raise HTTPException(status_code=400, detail="Selfie file size exceeds 10MB limit.")
     # Optimize image dimensions for sub-second CPU inference
-    _optimize_uploaded_image(doc_path, max_dim=1400)
+    _optimize_uploaded_image(doc_path, max_dim=1200)
     if selfie_path and selfie_path.exists():
-        _optimize_uploaded_image(selfie_path, max_dim=900)
+        _optimize_uploaded_image(selfie_path, max_dim=800)
 
     try:
-        # ---- 1. OCR --------------------------------------------------------
-        from modules.ocr import extract_mrz, extract_general_text
-
-        mrz_fields = extract_mrz(str(doc_path))
-        if mrz_fields:
-            extracted_fields = mrz_fields
-            ocr_method = "passporteye_mrz"
-        else:
-            extracted_fields = extract_general_text(str(doc_path))
-            ocr_method = "easyocr_fallback"
-
-        # ---- 2. Validation -------------------------------------------------
-        from modules.validation import validate_document
-
-        doc_number = (
-            extracted_fields.get("document_number")
-            or extracted_fields.get("doc_number")
-            or "UNKNOWN"
-        )
-        validation_result = validate_document(doc_number)
-
-        # ---- 3. Tampering --------------------------------------------------
         from modules.tampering import run_tampering_checks
+        from modules.face_match import match_faces
+        from modules.validation import validate_document
+        from modules.risk_engine import compute_risk
 
-        tampering_result = run_tampering_checks(str(doc_path))
+        doc_path_str = str(doc_path)
+        selfie_path_str = str(selfie_path) if selfie_path and selfie_path.exists() else None
+
+        # Execute OCR, Tampering, and Face Verification concurrently
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            ocr_future = executor.submit(_run_ocr_pipeline, doc_path_str)
+            tampering_future = executor.submit(run_tampering_checks, doc_path_str)
+
+            face_future = None
+            if selfie_path_str:
+                face_future = executor.submit(
+                    match_faces,
+                    doc_image_path=doc_path_str,
+                    live_image_path=selfie_path_str,
+                )
+
+            # Retrieve OCR results
+            extracted_fields, ocr_method = ocr_future.result()
+
+            # Retrieve Tampering results
+            tampering_result = tampering_future.result()
+
+            # Validation against database
+            doc_number = (
+                extracted_fields.get("document_number")
+                or extracted_fields.get("doc_number")
+                or "UNKNOWN"
+            )
+            validation_result = validate_document(doc_number)
+
+            # Retrieve Face matching results (or run against DB if no selfie)
+            if face_future is not None:
+                face_result = face_future.result()
+            else:
+                face_result = match_faces(
+                    doc_image_path=doc_path_str,
+                    live_image_path=None,
+                    doc_number=doc_number,
+                )
 
         # Expose ELA heatmap as a static URL if one was produced
         heatmap_url = None
@@ -222,18 +253,7 @@ async def analyze_document(
         if heatmap_src.exists():
             heatmap_url = f"/static/{heatmap_src.name}"
 
-        # ---- 4. Face verification ------------------------------------------
-        from modules.face_match import match_faces
-
-        face_result = match_faces(
-            doc_image_path=str(doc_path),
-            live_image_path=str(selfie_path) if selfie_path and selfie_path.exists() else None,
-            doc_number=doc_number,
-        )
-
-        # ---- 5. Risk scoring -----------------------------------------------
-        from modules.risk_engine import compute_risk
-
+        # Risk scoring
         blacklist_flag = validation_result.get("status") == "blacklisted"
         risk_result = compute_risk(
             validation_result=validation_result,
@@ -243,7 +263,7 @@ async def analyze_document(
             face_match_status=face_result.get("match_status", ""),
         )
 
-        # ---- Build response ------------------------------------------------
+        # Build response
         return {
             "extracted_fields": extracted_fields,
             "ocr_method": ocr_method,

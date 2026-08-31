@@ -14,6 +14,7 @@ import re
 import warnings
 from pathlib import Path
 from typing import Optional
+import numpy as np
 from PIL import Image, ImageOps
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -264,27 +265,35 @@ def _get_easyocr_reader():
     global _easyocr_reader
     if _easyocr_reader is None:
         try:
-            import os
-            os.environ["OMP_NUM_THREADS"] = "1"
+            num_threads = min(os.cpu_count() or 4, 4)
+            os.environ["OMP_NUM_THREADS"] = str(num_threads)
             import torch
-            torch.set_num_threads(1)
+            torch.set_num_threads(num_threads)
             torch.set_grad_enabled(False)
         except Exception:
             pass
 
         import easyocr
-        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
+        try:
+            _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True, quantize=True)
+        except Exception:
+            _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True)
     return _easyocr_reader
 
 
 def warmup_ocr() -> None:
-    """Pre-warm OCR engine."""
-    pass
+    """Pre-warm OCR engine during server startup to avoid first-request latency."""
+    try:
+        reader = _get_easyocr_reader()
+        dummy_img = np.full((64, 256, 3), 255, dtype=np.uint8)
+        reader.readtext(dummy_img, detail=0)
+    except Exception as exc:
+        print(f"[Startup] OCR warmup notice: {exc}")
 
 
 def extract_general_text(image_path: str) -> dict:
     """
-    Extract text and key fields using Pytesseract (if available) or EasyOCR (single-thread mode).
+    Extract text and key fields using Pytesseract (if available) or EasyOCR (quantized multi-threaded mode).
     """
     raw_text: list[str] = []
     full_text = ""
@@ -304,31 +313,38 @@ def extract_general_text(image_path: str) -> dict:
     if not raw_text:
         try:
             reader = _get_easyocr_reader()
+            with Image.open(image_path) as img:
+                img = ImageOps.exif_transpose(img)
+                w, h = img.size
+                if max(w, h) > 1000:
+                    scale = 1000 / max(w, h)
+                    img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+                ocr_img = np.array(img.convert("RGB"))
+
             try:
                 import torch
                 with torch.inference_mode():
                     results = reader.readtext(
-                        image_path,
+                        ocr_img,
                         detail=1,
                         paragraph=False,
                         batch_size=1,
-                        canvas_size=1024,
+                        canvas_size=800,
                         mag_ratio=1.0,
                     )
             except Exception:
                 results = reader.readtext(
-                    image_path,
+                    ocr_img,
                     detail=1,
                     paragraph=False,
                     batch_size=1,
-                    canvas_size=1024,
+                    canvas_size=800,
                     mag_ratio=1.0,
                 )
 
             raw_text = [r[1].strip() for r in results if r[1].strip()]
             full_text = "\n".join(raw_text)
-            gc.collect()
-        except Exception as exc:
+        except Exception:
             pass
 
     # Extract MRZ lines if present
