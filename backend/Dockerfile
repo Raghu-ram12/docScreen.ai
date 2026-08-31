@@ -33,6 +33,6 @@ urllib.request.urlretrieve(sface_url, 'models/face_recognition_sface_2021dec.onn
 "
 RUN python generate_test_assets.py
 
-EXPOSE 7860
+EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
