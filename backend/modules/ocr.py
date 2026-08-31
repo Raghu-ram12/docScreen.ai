@@ -314,7 +314,6 @@ def _get_easyocr_reader():
         return None
     if _easyocr_reader is None:
         try:
-            # Limit threads to avoid OOM on constrained environments
             num_threads = min(os.cpu_count() or 2, 2)
             os.environ["OMP_NUM_THREADS"] = str(num_threads)
             try:
@@ -323,7 +322,6 @@ def _get_easyocr_reader():
                 torch.set_grad_enabled(False)
             except Exception:
                 pass
-
             import easyocr
             try:
                 _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False, download_enabled=True, quantize=True)
@@ -341,17 +339,15 @@ def warmup_ocr() -> None:
     Uses pytesseract if available (lightweight). EasyOCR warmup is skipped
     on free-tier deployments where it's not installed.
     """
-    # Try pytesseract first — it's the primary engine
     try:
         import pytesseract
-        dummy = Image.new("RGB", (100, 30), color=(255, 255, 255))
-        pytesseract.image_to_string(dummy)
-        print("[Startup] pytesseract warmed up successfully.")
+        dummy = Image.new("L", (200, 60), color=255)
+        result = pytesseract.image_to_string(dummy, lang="eng", config="--oem 3 --psm 6")
+        print(f"[Startup] pytesseract warmed up OK (tesseract cmd: {pytesseract.pytesseract.tesseract_cmd})")
         return
     except Exception as exc:
-        print(f"[Startup] pytesseract warmup notice: {exc}")
+        print(f"[Startup] pytesseract warmup FAILED: {exc}")
 
-    # Only try EasyOCR if explicitly available (optional)
     if not _is_easyocr_available():
         print("[Startup] EasyOCR not installed — pytesseract-only mode active.")
         return
@@ -366,27 +362,81 @@ def warmup_ocr() -> None:
         print(f"[Startup] EasyOCR warmup notice: {exc}")
 
 
+def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
+    """
+    Preprocess a PIL image for maximum pytesseract accuracy on document photos.
+
+    Steps:
+      1. EXIF-correct orientation
+      2. Convert to grayscale (tesseract works best on grayscale)
+      3. Upscale if too small — tesseract is calibrated for ~300 DPI; phone document
+         photos are often 150-200 DPI equivalent. Scaling to at least 1800px on the
+         long edge gives enough resolution for the LSTM engine.
+      4. CLAHE contrast enhancement via OpenCV — boosts faint text on glare/shadows
+      5. Mild unsharp-mask sharpening — counteracts camera blur
+    """
+    img = ImageOps.exif_transpose(img).convert("L")  # grayscale
+
+    # Upscale small images — tesseract struggles below ~200px text height
+    w, h = img.size
+    min_long_edge = 1800
+    if max(w, h) < min_long_edge:
+        scale = min_long_edge / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+    # CLAHE — adaptive histogram equalisation for local contrast
+    try:
+        import cv2
+        arr = np.array(img)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        arr = clahe.apply(arr)
+        img = Image.fromarray(arr)
+    except Exception:
+        # Fallback: global auto-contrast if cv2 unavailable
+        img = ImageOps.autocontrast(img, cutoff=1)
+
+    # Mild sharpening to counteract camera/scanner blur
+    img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
+
+    return img
+
+
 def extract_general_text(image_path: str) -> dict:
     """
     Extract text and key fields using:
-      1. Pytesseract (primary — fast, low memory)
+      1. Pytesseract with preprocessing (primary — fast, low memory)
       2. EasyOCR (optional fallback — only if installed and pytesseract yields nothing)
     """
     raw_text: list[str] = []
     full_text = ""
 
-    # Strategy A: Pytesseract (primary engine, always tried first)
+    # ── Strategy A: Pytesseract (primary engine) ──────────────────────────────
     try:
         import pytesseract
-        with Image.open(image_path) as img:
-            img = ImageOps.exif_transpose(img)
-            full_text = pytesseract.image_to_string(img)
-            raw_text = [line.strip() for line in full_text.split("\n") if line.strip()]
-    except Exception:
+
+        with Image.open(image_path) as src:
+            processed = _preprocess_for_ocr(src)
+
+        # --oem 3  → LSTM engine (most accurate)
+        # --psm 3  → fully automatic page segmentation (best for documents)
+        tess_config = "--oem 3 --psm 3"
+
+        # Point tesseract at the language data directory
+        tessdata_dir = os.environ.get("TESSDATA_PREFIX", "")
+        if tessdata_dir:
+            tess_config += f" --tessdata-dir {tessdata_dir}"
+
+        full_text = pytesseract.image_to_string(processed, lang="eng", config=tess_config)
+        raw_text = [line.strip() for line in full_text.split("\n") if line.strip()]
+
+        print(f"[OCR] pytesseract extracted {len(raw_text)} lines from {image_path}")
+
+    except Exception as exc:
+        print(f"[OCR] pytesseract failed: {exc}")
         raw_text = []
         full_text = ""
 
-    # Strategy B: EasyOCR fallback — only if pytesseract produced nothing AND EasyOCR is installed
+    # ── Strategy B: EasyOCR fallback (only if pytesseract returned nothing) ──
     if not raw_text and _is_easyocr_available():
         try:
             reader = _get_easyocr_reader()
@@ -402,36 +452,22 @@ def extract_general_text(image_path: str) -> dict:
                 try:
                     import torch
                     with torch.inference_mode():
-                        results = reader.readtext(
-                            ocr_img,
-                            detail=1,
-                            paragraph=False,
-                            batch_size=1,
-                            canvas_size=800,
-                            mag_ratio=1.0,
-                        )
+                        results = reader.readtext(ocr_img, detail=1, paragraph=False,
+                                                  batch_size=1, canvas_size=800, mag_ratio=1.0)
                 except Exception:
-                    results = reader.readtext(
-                        ocr_img,
-                        detail=1,
-                        paragraph=False,
-                        batch_size=1,
-                        canvas_size=800,
-                        mag_ratio=1.0,
-                    )
+                    results = reader.readtext(ocr_img, detail=1, paragraph=False,
+                                              batch_size=1, canvas_size=800, mag_ratio=1.0)
 
                 raw_text = [r[1].strip() for r in results if r[1].strip()]
                 full_text = "\n".join(raw_text)
-        except Exception:
-            pass
+                print(f"[OCR] EasyOCR fallback extracted {len(raw_text)} lines")
+        except Exception as exc:
+            print(f"[OCR] EasyOCR fallback failed: {exc}")
 
-    # Extract MRZ lines if present
+    # ── Structured parsing ────────────────────────────────────────────────────
     mrz_parsed = _parse_mrz_lines(raw_text)
-
-    # Extract entity fields from recognized lines
     entity_parsed = _extract_entities_from_text(raw_text)
 
-    # Merge fields
     combined_fields = {**entity_parsed, **mrz_parsed}
     combined_fields["raw_text"] = raw_text
     combined_fields["full_text"] = full_text
