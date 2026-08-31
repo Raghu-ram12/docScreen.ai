@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  doc-screening:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doc-screening-app
+    ports:
+      - "7860:7860"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./backend/static:/app/static
+      - ./backend/uploads:/app/uploads
+    restart: unless-stopped

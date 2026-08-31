@@ -1,0 +1,172 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design Tokens ────────────────────────────────────────────────────────── */
+
+[data-theme="light"] {
+  --bg:         #F6F6F3;
+  --surface:    #FFFFFF;
+  --hairline:   #DEDDD7;
+  --ink:        #1C1F22;
+  --ink-soft:   #5B6168;
+  --ink-faint:  #8B9096;
+  --steel:      #2B4C7E;
+  --steel-soft: #EAF0FA;
+  --low:        #2F7B4F;
+  --low-soft:   #E7F2EC;
+  --med:        #B07A1E;
+  --med-soft:   #FBF1E1;
+  --high:       #B23A2E;
+  --high-soft:  #FBEAE8;
+}
+
+[data-theme="dark"] {
+  --bg:         #14171A;
+  --surface:    #1C2024;
+  --hairline:   #2B2F34;
+  --ink:        #E8E9EA;
+  --ink-soft:   #9AA0A6;
+  --ink-faint:  #6B7075;
+  --steel:      #6C9BE0;
+  --steel-soft: #1F2B3D;
+  --low:        #4CAF77;
+  --low-soft:   #1B2E22;
+  --med:        #D99A3D;
+  --med-soft:   #332711;
+  --high:       #E0685C;
+  --high-soft:  #3A1E1B;
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────────────── */
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body { transition: none; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
+
+  /* Focus ring */
+  :focus-visible {
+    outline: 2px solid var(--steel);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  input, select, button {
+    font-family: inherit;
+  }
+}
+
+/* ─── Components ─────────────────────────────────────────────────────────────── */
+
+@layer components {
+  .panel {
+    background-color: var(--surface);
+    border: 1px solid var(--hairline);
+  }
+
+  .divider {
+    border-color: var(--hairline);
+  }
+
+  .field-label {
+    font-size: 11px;
+    color: var(--ink-soft);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .field-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+
+  .btn-primary {
+    background-color: var(--steel);
+    color: #fff;
+    font-weight: 500;
+    padding: 0.5rem 1.25rem;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: opacity 120ms;
+  }
+
+  .btn-primary:hover { opacity: 0.88; }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink-soft);
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 3px;
+    border: 1px solid var(--hairline);
+    cursor: pointer;
+    transition: background 120ms;
+  }
+
+  .btn-ghost:hover { background: var(--steel-soft); color: var(--steel); }
+
+  .btn-danger-outline {
+    background: transparent;
+    color: var(--high);
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 3px;
+    border: 1px solid var(--high);
+    cursor: pointer;
+    transition: background 120ms;
+  }
+
+  .btn-danger-outline:hover { background: var(--high-soft); }
+
+  .input-field {
+    width: 100%;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    padding: 0.5rem 0.75rem;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 120ms;
+  }
+
+  .input-field::placeholder { color: var(--ink-faint); }
+  .input-field:focus { border-color: var(--steel); }
+
+  .risk-band-low    { color: var(--low);  background: var(--low-soft); }
+  .risk-band-medium { color: var(--med);  background: var(--med-soft); }
+  .risk-band-high   { color: var(--high); background: var(--high-soft); }
+}
