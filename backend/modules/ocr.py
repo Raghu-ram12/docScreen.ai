@@ -26,30 +26,42 @@ warnings.filterwarnings("ignore", module="torch")
 warnings.filterwarnings("ignore", module="easyocr")
 
 # ---------------------------------------------------------------------------
-# Pytesseract binary path — set explicitly for Linux (Render/Docker)
-# On Windows this auto-detects; on Linux we pin the standard Debian path.
+# Pytesseract binary and tessdata path discovery (Linux / Render / Docker)
 # ---------------------------------------------------------------------------
 import sys as _sys
+import shutil as _shutil
+
+def _find_tesseract_cmd() -> Optional[str]:
+    found = _shutil.which("tesseract")
+    if found:
+        return found
+    for cand in [
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/app/.apt/usr/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ]:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
 if _sys.platform != "win32":
     try:
         import pytesseract as _pyt
-        import shutil as _shutil
-        _tess_path = _shutil.which("tesseract") or "/usr/bin/tesseract"
-        _pyt.pytesseract.tesseract_cmd = _tess_path
+        _tess_cmd = _find_tesseract_cmd()
+        if _tess_cmd:
+            _pyt.pytesseract.tesseract_cmd = _tess_cmd
+        
         # Ensure tessdata prefix is set so English language pack is found
         if not os.environ.get("TESSDATA_PREFIX"):
-            import subprocess as _sp
-            try:
-                # Ask tesseract where its data is
-                _out = _sp.check_output([_tess_path, "--print-parameters"], stderr=_sp.STDOUT, timeout=5).decode()
-            except Exception:
-                pass
-            # Common Debian/Ubuntu tessdata locations
             for _candidate in [
                 "/usr/share/tesseract-ocr/4.00/tessdata",
                 "/usr/share/tesseract-ocr/5/tessdata",
                 "/usr/share/tessdata",
                 "/usr/local/share/tessdata",
+                "/app/.apt/usr/share/tesseract-ocr/4.00/tessdata",
+                "/app/.apt/usr/share/tesseract-ocr/5/tessdata",
+                "/app/.apt/usr/share/tessdata",
             ]:
                 if os.path.isdir(_candidate) and os.path.exists(os.path.join(_candidate, "eng.traineddata")):
                     os.environ["TESSDATA_PREFIX"] = _candidate
