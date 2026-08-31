@@ -18,20 +18,11 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
-# Suppress 3rd party deprecation and backend warnings (passporteye, skimage, torch, easyocr)
+# Suppress 3rd party deprecation and backend warnings (passporteye, skimage)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", module="passporteye")
 warnings.filterwarnings("ignore", module="skimage")
-warnings.filterwarnings("ignore", module="torch")
-warnings.filterwarnings("ignore", module="easyocr")
-
-try:
-    import torch
-    torch.set_num_threads(1)
-    torch.set_grad_enabled(False)
-except Exception:
-    pass
 
 try:
     import cv2
