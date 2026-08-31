@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path("doc_screening.db")
+DB_PATH = Path(__file__).parent / "doc_screening.db"
 
 
 # ---------------------------------------------------------------------------

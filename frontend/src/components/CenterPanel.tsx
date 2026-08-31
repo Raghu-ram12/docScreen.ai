@@ -228,7 +228,7 @@ export function CenterPanel({ result, loading }: CenterPanelProps) {
           </span>
         </div>
         <span style={{ fontFamily: '"IBM Plex Mono"', fontSize: 11, color: 'var(--steel)' }}>
-          {ocr_method === 'passporteye_mrz' ? 'MRZ Engine (passporteye)' : 'Deep OCR (EasyOCR + Heuristics)'}
+          {ocr_method === 'passporteye_mrz' ? 'MRZ Engine (passporteye)' : 'OCR Engine (pytesseract)'}
         </span>
       </div>
 

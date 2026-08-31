@@ -9,8 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         tesseract-ocr \
+        tesseract-ocr-eng \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Set tessdata path as a persistent env var baked into the image
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
 
 WORKDIR /app
 
@@ -20,6 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code
 COPY . .
+
+# Verify tesseract + English language data works at build time
+RUN tesseract --list-langs 2>&1 | grep -q eng && echo "✓ tesseract-ocr-eng OK" || (echo "ERROR: eng.traineddata not found" && exit 1)
 
 # Create runtime directories (models download lazily on first request — no build-time network calls)
 RUN mkdir -p static uploads test_assets models

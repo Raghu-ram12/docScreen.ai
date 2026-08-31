@@ -10,3 +10,5 @@ services:
         value: "1"
       - key: OPENCV_LOG_LEVEL
         value: "ERROR"
+      - key: TESSDATA_PREFIX
+        value: /usr/share/tesseract-ocr/4.00/tessdata

@@ -25,6 +25,38 @@ warnings.filterwarnings("ignore", module="skimage")
 warnings.filterwarnings("ignore", module="torch")
 warnings.filterwarnings("ignore", module="easyocr")
 
+# ---------------------------------------------------------------------------
+# Pytesseract binary path — set explicitly for Linux (Render/Docker)
+# On Windows this auto-detects; on Linux we pin the standard Debian path.
+# ---------------------------------------------------------------------------
+import sys as _sys
+if _sys.platform != "win32":
+    try:
+        import pytesseract as _pyt
+        import shutil as _shutil
+        _tess_path = _shutil.which("tesseract") or "/usr/bin/tesseract"
+        _pyt.pytesseract.tesseract_cmd = _tess_path
+        # Ensure tessdata prefix is set so English language pack is found
+        if not os.environ.get("TESSDATA_PREFIX"):
+            import subprocess as _sp
+            try:
+                # Ask tesseract where its data is
+                _out = _sp.check_output([_tess_path, "--print-parameters"], stderr=_sp.STDOUT, timeout=5).decode()
+            except Exception:
+                pass
+            # Common Debian/Ubuntu tessdata locations
+            for _candidate in [
+                "/usr/share/tesseract-ocr/4.00/tessdata",
+                "/usr/share/tesseract-ocr/5/tessdata",
+                "/usr/share/tessdata",
+                "/usr/local/share/tessdata",
+            ]:
+                if os.path.isdir(_candidate) and os.path.exists(os.path.join(_candidate, "eng.traineddata")):
+                    os.environ["TESSDATA_PREFIX"] = _candidate
+                    break
+    except ImportError:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Helper: MRZ string parser for TD1, TD2, TD3 (Passport) formats

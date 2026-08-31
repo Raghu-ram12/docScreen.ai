@@ -31,16 +31,13 @@ wheels/
 .installed.cfg
 *.egg
 
-# Temporary Uploads & Generated Heatmaps & DBs
+# Temporary Uploads & Generated Heatmaps
 backend/uploads/*
 !backend/uploads/.gitkeep
 backend/static/ela_*.jpg
 uploads/*
 *.log
 uvicorn_*.txt
-*.db
-*.sqlite3
-doc_screening.db
 
 # OS & IDE
 .DS_Store
