@@ -40,34 +40,49 @@ def _find_tesseract_cmd() -> Optional[str]:
         "/usr/local/bin/tesseract",
         "/app/.apt/usr/bin/tesseract",
         "/opt/homebrew/bin/tesseract",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     ]:
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK if _sys.platform != "win32" else os.F_OK):
             return cand
     return None
 
-if _sys.platform != "win32":
-    try:
-        import pytesseract as _pyt
-        _tess_cmd = _find_tesseract_cmd()
-        if _tess_cmd:
-            _pyt.pytesseract.tesseract_cmd = _tess_cmd
-        
-        # Ensure tessdata prefix is set so English language pack is found
-        if not os.environ.get("TESSDATA_PREFIX"):
-            for _candidate in [
-                "/usr/share/tesseract-ocr/4.00/tessdata",
-                "/usr/share/tesseract-ocr/5/tessdata",
-                "/usr/share/tessdata",
-                "/usr/local/share/tessdata",
-                "/app/.apt/usr/share/tesseract-ocr/4.00/tessdata",
-                "/app/.apt/usr/share/tesseract-ocr/5/tessdata",
-                "/app/.apt/usr/share/tessdata",
-            ]:
-                if os.path.isdir(_candidate) and os.path.exists(os.path.join(_candidate, "eng.traineddata")):
-                    os.environ["TESSDATA_PREFIX"] = _candidate
-                    break
-    except ImportError:
-        pass
+def _find_tessdata_dir() -> Optional[str]:
+    env_path = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if env_path and os.path.isdir(env_path) and os.path.exists(os.path.join(env_path, "eng.traineddata")):
+        return env_path
+    
+    for _candidate in [
+        "/usr/share/tesseract-ocr/5/tessdata",
+        "/usr/share/tesseract-ocr/4.00/tessdata",
+        "/usr/share/tessdata",
+        "/usr/local/share/tessdata",
+        "/app/.apt/usr/share/tesseract-ocr/5/tessdata",
+        "/app/.apt/usr/share/tesseract-ocr/4.00/tessdata",
+        "/app/.apt/usr/share/tessdata",
+        r"C:\Program Files\Tesseract-OCR\tessdata",
+        r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+    ]:
+        if os.path.isdir(_candidate) and os.path.exists(os.path.join(_candidate, "eng.traineddata")):
+            return _candidate
+    return None
+
+try:
+    import pytesseract as _pyt
+    _tess_cmd = _find_tesseract_cmd()
+    if _tess_cmd:
+        _pyt.pytesseract.tesseract_cmd = _tess_cmd
+    
+    _valid_tess = _find_tessdata_dir()
+    if _valid_tess:
+        os.environ["TESSDATA_PREFIX"] = _valid_tess
+    else:
+        # If set TESSDATA_PREFIX is invalid, remove it to allow default lookup
+        _curr = os.environ.get("TESSDATA_PREFIX", "").strip()
+        if _curr and not (os.path.isdir(_curr) and os.path.exists(os.path.join(_curr, "eng.traineddata"))):
+            os.environ.pop("TESSDATA_PREFIX", None)
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +448,9 @@ def extract_general_text(image_path: str) -> dict:
         # --psm 3  → fully automatic page segmentation (best for documents)
         tess_config = "--oem 3 --psm 3"
 
-        # Point tesseract at the language data directory
-        tessdata_dir = os.environ.get("TESSDATA_PREFIX", "")
-        if tessdata_dir:
+        # Point tesseract at the language data directory if valid
+        tessdata_dir = os.environ.get("TESSDATA_PREFIX", "").strip()
+        if tessdata_dir and os.path.isdir(tessdata_dir) and os.path.exists(os.path.join(tessdata_dir, "eng.traineddata")):
             tess_config += f" --tessdata-dir {tessdata_dir}"
 
         full_text = pytesseract.image_to_string(processed, lang="eng", config=tess_config)

@@ -13,9 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set tessdata path as a persistent env var baked into the image
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
-
 WORKDIR /app
 
 # Python dependencies
